@@ -7,14 +7,20 @@ import styles from "./style.module.css";
 type Country = {
   name: string;
   code: string;
-  region: string;
-  flag: string;
 };
 
 type Status = "idle" | "loading" | "success" | "empty" | "error";
 
 const MIN_QUERY_LENGTH = 2;
 const DEBOUNCE_MS = 300;
+
+// Converts a 2-letter ISO country code (e.g. "NG") into its flag emoji.
+
+function codeToFlag(code: string): string {
+  return code
+    .toUpperCase()
+    .replace(/./g, (char) => String.fromCodePoint(127397 + char.charCodeAt(0)));
+}
 
 export default function CountryTypeahead() {
   const [query, setQuery] = useState("");
@@ -25,10 +31,6 @@ export default function CountryTypeahead() {
 
   const debouncedQuery = useDebouncedValue(query, DEBOUNCE_MS);
 
-  // Guards against out-of-order responses: if request #2 fires after
-  // request #1 but resolves first, request #1's response should never
-  // be allowed to overwrite it. We track the "latest requested" id and
-  // only commit a response to state if it still matches when it lands.
   const latestRequestId = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const listboxRef = useRef<HTMLUListElement>(null);
@@ -44,41 +46,33 @@ export default function CountryTypeahead() {
 
     const requestId = ++latestRequestId.current;
 
-    // Cancel any in-flight request before starting a new one — this is
-    // the primary defense against stale responses. The requestId check
-    // below is the backup, in case the network layer doesn't honor the
-    // abort in time (some browsers/proxies still let an aborted request
-    // resolve before the cancellation is fully processed).
     abortControllerRef.current?.abort();
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
     setStatus("loading");
 
-    fetch(
-      `https://restcountries.com/v3.1/name/${encodeURIComponent(trimmed)}?fields=name,cca2,region,flag`,
-      { signal: controller.signal },
-    )
+    // This API returns the full country list rather than searching
+    // server-side, so filtering happens client-side after the fetch.
+    fetch("https://date.nager.at/api/v3/AvailableCountries", {
+      signal: controller.signal,
+    })
       .then((res) => {
         if (!res.ok) {
-          // The API returns 404 for "no matches" rather than an empty array
-          if (res.status === 404) return [];
           throw new Error(`Request failed with status ${res.status}`);
         }
         return res.json();
       })
-      .then((data: any[]) => {
+      .then((data: { name: string; countryCode: string }[]) => {
         if (requestId !== latestRequestId.current) return; // stale, ignore
 
-        const mapped: Country[] = data.map((c) => ({
-          name: c.name.common,
-          code: c.cca2,
-          region: c.region,
-          flag: c.flag,
-        }));
+        const lowerQuery = trimmed.toLowerCase();
+        const filtered: Country[] = data
+          .filter((c) => c.name.toLowerCase().includes(lowerQuery))
+          .map((c) => ({ name: c.name, code: c.countryCode }));
 
-        setResults(mapped);
-        setStatus(mapped.length === 0 ? "empty" : "success");
+        setResults(filtered);
+        setStatus(filtered.length === 0 ? "empty" : "success");
         setIsOpen(true);
         setHighlightedIndex(-1);
       })
@@ -183,10 +177,9 @@ export default function CountryTypeahead() {
               onMouseEnter={() => setHighlightedIndex(index)}
             >
               <span className={styles.flag} aria-hidden="true">
-                {country.flag}
+                {codeToFlag(country.code)}
               </span>
               <span>{country.name}</span>
-              <span className={styles.region}>{country.region}</span>
             </li>
           ))}
         </ul>
